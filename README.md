@@ -1,4 +1,4 @@
-# Various AD-Hoc Scripts 
+# Various Ad-Hoc Scripts 
 
 **(Facebook API, Twitter API, S3 Bucket)**
 

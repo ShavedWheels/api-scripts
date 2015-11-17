@@ -47,7 +47,7 @@ class DBConnection(object):
 
 class FacebookConnect(DBConnection):
 
-    token = 'CAACEdEose0cBALeKVKZCypaadNx18ePBiaM6ZCM77y0ArPqoX8NsLr7HsPBwDwCQQeqzmO8YHfCMZCFZAhd4CjYQr8qp0ySyT1Iqg25ZAC0uzrqlLxGvu4crOAHSLeNUbPnFP2Y64W4vbHYGJjrqcXzUYs2fMwR7mxHXZAQTZCOSnSutiyE9IeMaZCGtrvRyG8GG6ovlqR2np7g6W7KKqySLOaWmyE49PZCgZD'
+    token = 'insert_your_own_token_here'
 
     def __init__(self, access_token):
         """

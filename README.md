@@ -1,6 +1,6 @@
 # Various Ad-Hoc Scripts 
 
-**(Facebook API, Twitter API, Strava PI, S3 Bucket)**
+**(Facebook API, Twitter API, Strava API, S3 Bucket)**
 
 *fb_posts.py*
 

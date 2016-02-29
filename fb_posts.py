@@ -6,7 +6,7 @@ from bishared import job_utils
 from datetime import datetime
 import requests
 import sys
-
+import os
 
 class DBConnection(object):
     """

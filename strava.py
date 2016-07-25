@@ -1,5 +1,7 @@
 from stravalib import Client
-from bishared.job_utils import WarehouseConnectionManager, LoggingUtils
+import psycopg2
+from ConfigParser import SafeConfigParser
+import warnings
 
 
 class Strava(object):
@@ -12,7 +14,7 @@ class Strava(object):
         Instantiate the class
         :param token: access token to use to gain access
         """
-        self.token = 'insert_token_here'
+        self.token = raw_input("Please enter your token here:")
 
     def get_connection(self):
         """
@@ -29,10 +31,8 @@ class Strava(object):
         """
         conn = self.get_connection()
         athlete = conn.get_athlete()
-        return "Hey! My name is {first_name} {last_name}. I have {followers} followers on Strava".format(
-            first_name=athlete.firstname,
-            last_name=athlete.lastname,
-            followers=athlete.follower_count)
+        details = {'first_name': athlete.firstname, 'last_name': athlete.lastname, 'followers': athlete.follower_count}
+        return details
 
     @staticmethod
     def distance_converter(qnty_obj):
@@ -97,10 +97,13 @@ class Strava(object):
                               active.kudos_count,
                               self.metres_to_feet(active.total_elevation_gain),
                               active.kilojoules))
+            if len(ride_info) % 100 == 0:
+                print "{rows} inserted so far...".format(rows=len(ride_info))
+        print "{rows} rows inserted!".format(rows=len(ride_info))
         return ride_info
 
 
-class Connection(Strava):
+class DBConnection(Strava):
     """
     Class for getting DB Connections
     """
@@ -113,16 +116,41 @@ class Connection(Strava):
         """
         self.config = config
         self.section = section
+        warnings.filterwarnings("ignore")
 
-        super(Connection, self).__init__()
+        super(DBConnection, self).__init__()
+
+    def get_config_details(self):
+        """
+        Gets our local connection details from a config file
+        :return: config details
+        """
+        config = SafeConfigParser()
+        config.read(self.config)
+        details = dict(config.items(self.section))
+        return details
 
     def connect(self):
         """
         Method for getting a connection
         :returns: DB Connection
         """
-        conn = WarehouseConnectionManager(self.config, self.section)
+        conn = psycopg2.connect(**self.get_config_details())
         return conn
+
+    def execute_sql(self, sql, data=None, executemany=False):
+
+        conn = self.connect()
+        cursor = conn.cursor()
+        if data:
+            cursor.executemany(sql, data) if executemany else cursor.execute(sql, data)
+            conn.commit()
+            rows = cursor.rowcount
+            return rows
+        cursor.execute(sql)
+        conn.commit()
+        rows = cursor.rowcount
+        return rows
 
     def create_table(self):
         """
@@ -130,8 +158,9 @@ class Connection(Strava):
         """
         sql = \
         """create table if not exists strava_data (
-            id int not null auto_increment unique key,
-            activity_id int primary key,
+            id serial,
+            activity_id int unique,
+            name text,
             _date date,
             distance_miles decimal (10,4),
             avg_power decimal (10, 4),
@@ -140,14 +169,40 @@ class Connection(Strava):
             kudos_count int,
             elevation_feet decimal(18, 4),
             kilojoules decimal (12, 2))"""
-        self.connect().execute(sql)
+        self.execute_sql(sql)
+
+    def summary_printout(self, activity_list):
+        """
+        Method which prints out your lifetime summary stats
+        :param activity_list: list which we will be iterating over
+        :return: message containing our stats
+        """
+        summary = {'activities': len(activity_list),
+                   'miles': sum(i[3] for i in activity_list if i[3] is not None),
+                   'feet': sum(i[8] for i in activity_list if i[8] is not None),
+                   'calories': sum(i[9] for i in activity_list if i[9] is not None)}
+        message = \
+            """Hello {first_name} {last_name}. You have {followers} followers on Strava\n
+            You have recorded {act:,} activities\n
+            Cycled {miles:,} miles\n
+            Climbed {feet:,} feet\n
+            Burned {cal:,} calories"""
+        details = self.get_details()
+        print message.format(first_name=details['first_name'],
+                             last_name=details['last_name'],
+                             followers=details['followers'],
+                             act=summary['activities'],
+                             miles=int(summary['miles']),
+                             feet=int(summary['feet']),
+                             cal=int(summary['calories']))
 
     def insert_data(self):
         """
         Method which inserts our data
         """
         self.create_table()
-        self.connect().execute_many("""insert ignore into strava_data
+        activities = self.get_activities()
+        self.execute_sql("""insert into strava_data
         (activity_id,
         name,
         _date,
@@ -157,9 +212,12 @@ class Connection(Strava):
         elapsed_time_seconds,
         kudos_count,
         elevation_feet,
-        kilojoules) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""", self.get_activities())
+        kilojoules) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (activity_id) do update
+        set name=excluded.name,
+        kudos_count=excluded.kudos_count""", activities, executemany=True)
+        self.summary_printout(activities)
 
 
 if __name__ == '__main__':
-    logger = LoggingUtils.setup_logging('strava_data', 'log')
-    Connection('app.conf', 'bireporting').insert_data()
+    DBConnection('config.conf', 'local').insert_data()

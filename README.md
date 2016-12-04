@@ -2,12 +2,30 @@
 
 **(Facebook API, Twitter API, Strava API, S3 Bucket)**
 
+##### A local Postgres Database (9.5 or higher) is required.
+
 *fb_posts.py*
 
-Cool little script which uses the Facebook GraphAPI to extract all the wall posts you have posted,
-along with the amount of 'likes' (if any) it has recieved and the datetime you posted it.
-It then inserts the data into a MySQL database table.
+Script which uses the Facebook GraphAPI to extract all the wall posts you have posted,
+along with the location it was posted from (latitude, longitude), amount of 'likes' (if any) it has recieved and the datetime you posted it.
+It then inserts the data into a Postgres database table called 'fb_posts'.
 
+*Tableau Dashboard*
+https://public.tableau.com/profile/aaronolszewski#!/vizhome/Facebook_33/Facebook
+
+# Running the Script
+
+Clone the project to a local directory and create an virtualenv e.g. facebook-data:
+
+```
+$ mkvirtualenv facebook-data
+```
+
+Once created, run the make file from the root folder (api-scripts)
+
+```
+(facebook-data) $ make
+```
 
 *twitter_posts.py*
 

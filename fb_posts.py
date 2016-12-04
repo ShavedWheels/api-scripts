@@ -2,11 +2,43 @@
 Little script which pulls down all your wall posts and likes from your facebook wall and inserts them into a MySQL database
 """
 import facebook
-from bishared import job_utils
 from datetime import datetime
 import requests
 import sys
 import os
+import psycopg2
+from ConfigParser import SafeConfigParser
+
+TABLE_NAME = 'fb_posts'
+
+
+CREATE_TABLE_SQL = \
+"""
+create table if not exists {table_name}
+(created_date date,
+object_id text unique,
+story text,
+message text,
+likes int,
+poster text,
+post_type text,
+status_type text,
+latitude float,
+longitude float,
+place text)
+""".format(table_name=TABLE_NAME)
+
+
+INSERT_TEMPLATE = "insert into {table_name} ({columns}) values ({placement_holders}) on conflict do nothing"
+
+
+class FacebookException(Exception):
+    pass
+
+
+class DatabaseException(Exception):
+    pass
+
 
 class DBConnection(object):
     """
@@ -22,41 +54,73 @@ class DBConnection(object):
         self.config = config
         self.section = section
 
-    def get_connection(self):
+    def get_config_details(self):
         """
-        method for getting an open connection to the DB
+        Method which reads our config file
+        :return: dictionary containing our connection details {user, passwd, host, db etc...}
+        """
+        config = SafeConfigParser()
+        config.read(os.path.join(os.path.dirname(os.path.realpath(__file__)), self.config))
+        details = dict(config.items(self.section))
+        return details
+
+    def get_db_connection(self):
+        """
+        method for getting an open connection to our database
         :return: db connection
         """
-        conn = job_utils.WarehouseConnectionManager(self.config, self.section)
+        conn = psycopg2.connect(**self.get_config_details())
         return conn
 
-    def create_table(self):
+    def fetch_all_rows(self, sql):
         """
-        method which creates our table for us to insert into
+        Method which executes an SQL statement and returns the result as a tuple of tuples
+        :param sql: SQL query to be executed
+        :return: result-set as a tuple of tuples
+        E.g. (('foo'), ('bar'), ('baz'), )
         """
-        sql = \
-        """
-        create table if not exists fb_posts
-        (created_datetime datetime,
-        post varchar(100),
-        likes int)
-        """
-        self.get_connection().execute(sql)
-        return None
+        cursor = self.get_db_connection().cursor()
+        cursor.execute(sql)
+        results = cursor.fetchall()
+        return results
+
+    def execute_sql(self, sql, data=None, executemany=False):
+        conn = self.get_db_connection()
+        cursor = conn.cursor()
+        if data:
+            cursor.executemany(sql, data) if executemany else cursor.execute(sql, data)
+            conn.commit()
+            rows = cursor.rowcount
+            return rows
+        cursor.execute(sql)
+        conn.commit()
+        rows = cursor.rowcount
+        return rows
+
+    @staticmethod
+    def build_placement_holders(column_count):
+        return ",".join('%s' for _ in xrange(column_count))
+
+    def build_insert_sql(self):
+        get_columns_sql = "select column_name from information_schema.columns where table_name = '{table_name}'"
+        columns = self.fetch_all_rows(sql=get_columns_sql.format(table_name=TABLE_NAME))
+        formatted_columns = ", ".join(x[0] for x in columns)
+        return INSERT_TEMPLATE.format(table_name=TABLE_NAME,
+                                      columns=formatted_columns,
+                                      placement_holders=self.build_placement_holders(len(columns)))
 
 
-class FacebookConnect(DBConnection):
-
-    token = 'insert_your_own_token_here'
-
-    def __init__(self, access_token):
+class FacebookConnect(object):
+    def __init__(self):
         """
         Instantiate the class
         :param access_token: token used to connect to the GraphAPI
         """
-        self.token = access_token
-
-        super(FacebookConnect, self).__init__('facebook.conf', 'test')
+        self.token = raw_input("Please enter your Facebook Access Token:")
+        try:
+            self.connection = DBConnection('config.conf', 'local')
+        except Exception as _error:
+            raise DatabaseException("Failed to connect to Postgres Database: {error}".format(error=_error))
 
     def connect(self):
         """
@@ -69,32 +133,28 @@ class FacebookConnect(DBConnection):
     def get_posts(self):
         """
         gets all the recent facebook wall posts which the user has posted as well as the URL for the next set of posts
-        :return: list consisting of [post_data, URL]
+        :return: dictionary consisting of {post_data, url}
         """
-        posts = self.connect().get_connections("me", "posts")
+        try:
+            posts = self.connect().get_connections("me", "posts")
+        except Exception as _error:
+            raise FacebookException("Failed to connect to Facebook API: {error}".format(error=_error))
         post_data = posts['data']
         url = posts['paging']['next']
-        return post_data, url
+        return {'post_data': post_data, 'url': url}
 
-    @classmethod
-    def get_previous_posts(cls, url):
+    @staticmethod
+    def get_previous_posts(url):
         """
         method which gets a json response object (posts) from which we get our data and our URL for the subsequent iterations
         :return: list consisting of [post_data, URL]
         """
         posts = requests.get(url).json()
-        global url_string, data
-        try:
-            data = posts['data']
-        except KeyError, e:
-            print e
-        try:
-            url_string = posts['paging']['next']
-
-        except KeyError, e:
-            print "Key Error {}".format(e)
-            sys.exit("Failed to find relevant key. Exiting Script...")
-        return data, url_string
+        data = posts['data']
+        if not data:
+            sys.exit("No more data to process. Exiting Script")
+        url_string = posts['paging']['next']
+        return {'post_data': data, 'url': url_string}
 
     def get_insert_info(self, post_data):
         """
@@ -102,29 +162,48 @@ class FacebookConnect(DBConnection):
         :return: get a list of [created_time, facebook_post, likes]
         """
         insert_list = []
-        for posts in post_data[0]:
-            date = datetime.strptime(str(posts['created_time'][0:10]), '%Y-%m-%d')
+        latitude = None
+        longitude = None
+        place = None
+        for posts in post_data['post_data']:
             try:
-                ## check if an actual message was posted rather than a check-in / story
-                message = posts['message']
-            except KeyError, e:
-                message = 'None'
-            try:
-                ## check if anyone actually "liked" my post
-                likes = len(posts['likes']['data'])
-            except KeyError, e:
-                likes = 0
+                date = datetime.strptime(str(posts['created_time'][0:10]), '%Y-%m-%d')
+                object_id = posts['id']
+                story = posts['story'] if 'story' in posts else None
+                message = posts['message'] if 'message' in posts else None
+                likes = len(posts['likes']['data']) if 'likes' in posts else None
+                poster = posts['from']['name'] if 'from' in posts else None
+                post_type = posts['type'] if 'type' in posts else None
+                status_type = posts['status_type'] if 'status_type' in posts else None
+                latitude = posts['place']['location']['latitude'] if 'place' in posts else None
+                longitude = posts['place']['location']['longitude'] if 'place' in posts else None
+                place = posts['place']['name'] if 'place' in posts else None
+            except Exception as e:
+                print "Error getting info for {error}".format(error=e)
             finally:
-                insert_list.append((date, message, likes))
-        self.get_connection().execute_many("""insert ignore into fb_posts values (%s, %s, %s)""", insert_list)
-        self.get_insert_info(self.get_previous_posts(post_data[1]))
+                insert_list.append((date,
+                                    object_id,
+                                    story,
+                                    message,
+                                    likes,
+                                    poster,
+                                    post_type,
+                                    status_type,
+                                    latitude,
+                                    longitude,
+                                    place))
+        self.connection.execute_sql(sql=self.connection.build_insert_sql(),
+                                    data=insert_list,
+                                    executemany=True)
+        self.get_insert_info(self.get_previous_posts(post_data['url']))
 
     def execute(self):
         """
         main entry point to execute the script
         """
-        self.create_table()
+        self.connection.execute_sql(sql=CREATE_TABLE_SQL)
         self.get_insert_info(self.get_posts())
 
+
 if __name__ == '__main__':
-    FacebookConnect(access_token=FacebookConnect.token).execute()
+    FacebookConnect().execute()
